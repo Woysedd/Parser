@@ -1,10 +1,12 @@
 import asyncio
+import os
 import requests
 import openpyxl
 from playwright.async_api import async_playwright
-from fp.fp import FreeProxy
 
+# Твой список устройств
 TARGET_DEVICES = ["iPhone 13 128Gb", "iPhone 15 128Gb", "iPhone 16 128Gb", "iPhone 16 256Gb", "iPhone 17 Pro Max 256Gb"]
+
 SITES = {
     "re:luxon": {"url": "https://re-luxe42.ru/iphone/iphone-new", "item": ".product-thumb", "title": ".caption a", "price": ".price"},
     "re:premium": {"url": "https://repremium.ru/kemerovo/catalog/apple/iphone/", "item": ".catalog-item", "title": ".item-title", "price": ".price_val"},
@@ -12,34 +14,43 @@ SITES = {
 }
 
 async def run():
-    proxy = FreeProxy(country_id=['RU'], timeout=1).get()
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, proxy={"server": proxy})
+        # Браузер без прокси, чтобы не было ошибок сети
+        browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.append(["Устройство", "Цена"])
-
+        results = {}
         for name, cfg in SITES.items():
             page = await context.new_page()
             try:
-                await page.goto(cfg["url"], timeout=30000)
+                await page.goto(cfg["url"], timeout=40000)
                 await asyncio.sleep(5)
                 items = await page.query_selector_all(cfg["item"])
                 for item in items:
-                    t = await item.query_selector(cfg["title"])
+                    t_el = await item.query_selector(cfg["title"])
                     p_el = await item.query_selector(cfg["price"])
-                    if t and p_el:
-                        ws.append([await t.text_content(), await p_el.text_content()])
-            except: pass
+                    if t_el and p_el:
+                        t = await t_el.text_content()
+                        p = await p_el.text_content()
+                        results[t.strip()] = p.strip()
+            except Exception as e:
+                print(f"Ошибка на {name}: {e}")
             await page.close()
         
         await browser.close()
+        
+        # Запись в Excel
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["Название", "Цена"])
+        for k, v in results.items():
+            ws.append([k, v])
         wb.save("Price.xlsx")
         
-        token, chat_id = os.environ.get('TELEGRAM_BOT_TOKEN'), os.environ.get('TELEGRAM_CHAT_ID')
-        if token:
+        # Отправка
+        token = os.environ.get('TELEGRAM_BOT_TOKEN')
+        chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+        if token and chat_id:
             requests.post(f"https://api.telegram.org/bot{token}/sendDocument", 
                           data={"chat_id": chat_id}, files={"document": open("Price.xlsx", "rb")})
 
