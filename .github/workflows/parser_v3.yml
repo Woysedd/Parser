@@ -1,38 +1,24 @@
 name: Price Parser V3
 on:
   schedule:
-    - cron: '0 * * * *' # Запуск каждый час
-  workflow_dispatch: # Возможность запуска вручную
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-
       - name: Install dependencies
         run: |
-          pip install playwright openpyxl requests
+          pip install -r requirements.txt
           playwright install chromium
-
-      - name: Install WireGuard
-        run: sudo apt-get update && sudo apt-get install -y wireguard
-
-      - name: Start VPN
-        run: |
-          sudo cp WARP1014731.conf /etc/wireguard/wg0.conf
-          sudo wg-quick up wg0
-          # Ждем пару секунд, пока поднимется интерфейс
-          sleep 5
-
-      - name: Run Parser
+      - name: Run script
         run: python run_parser.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
