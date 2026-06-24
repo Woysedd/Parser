@@ -5,6 +5,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 import datetime
 import requests
 import os
+import random
 
 HEADERS = ["Название устройства", "re:luxon", "re:premium", "Like Store", "Prostore", "KingStore Уфа"]
 
@@ -59,20 +60,22 @@ async def fetch_site_data(context, url, item_sel, title_sel, price_sel):
     data = []
     page = await context.new_page()
     
-    # БЛОКИРОВКА МУСОРА: запрещаем грузить картинки и шрифты, чтобы экономить время и обходить тупняки сети
+    # Блокируем картинки и медиа, чтобы разгрузить сеть и лететь быстро
     await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "font", "media"] else route.continue_())
     
     try:
-        print(f"🔗 Подключаемся к {url}...")
-        # Переключаем ожидание на commit (как только пошел первый HTML-код, сразу парсим, не ждем полной загрузки)
-        await page.goto(url, timeout=30000, wait_until="commit")
+        # Небольшая случайная задержка перед заходом, чтобы сбить антифрод алгоритмы сайтов
+        await asyncio.sleep(random.uniform(1.5, 3.5))
+        print(f"🔗 Подключение к сайту: {url}")
         
-        # Даем 5 секунд на то, чтобы подгрузились скрипты цен, если они динамические
-        await page.wait_for_timeout(5000)
+        await page.goto(url, timeout=45000, wait_until="domcontentloaded")
         
+        # Эмуляция скроллинга человека для подгрузки динамических прайсов
+        for _ in range(3):
+            await page.evaluate("window.scrollBy(0, 800)")
+            await page.wait_for_timeout(800)
+            
         items = await page.query_selector_all(item_sel)
-        print(f"📦 {url}: Найдено карточек товара — {len(items)}")
-        
         for item in items:
             t_el = await item.query_selector(title_sel)
             p_el = await item.query_selector(price_sel)
@@ -80,8 +83,9 @@ async def fetch_site_data(context, url, item_sel, title_sel, price_sel):
                 t_text = (await t_el.text_content()).lower()
                 p_text = await p_el.text_content()
                 data.append((t_text, clean_price(p_text)))
+        print(f"✅ Данные с {url} успешно получены. Вытащили позиций: {len(data)}")
     except Exception as e:
-        print(f"⚠️ Сайт {url} не ответил вовремя, вытаскиваем то, что успело загрузиться. Ошибка: {e}")
+        print(f"⚠️ Ошибка при парсинге {url}: {e}")
     finally:
         await page.close()
     return data
@@ -99,13 +103,16 @@ def find_price_in_cache(cache, m_num, mem, sim_type):
 
 async def main():
     async with async_playwright() as p:
+        # Запускаем браузер в режиме скрытности
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
+            viewport={"width": 1920, "height": 1080},
+            locale="ru-RU",
+            timezone_id="Asia/Krasnoyarsk"
         )
         
-        print("🚀 Запускаем ускоренный параллельный сбор данных...")
+        print("🚀 Запускаем умный параллельный сбор данных без блокировок...")
         tasks = [
             fetch_site_data(context, "https://re-luxe42.ru/iphone/iphone-new", ".product-thumb", ".caption a", ".price"),
             fetch_site_data(context, "https://repremium.ru/kemerovo/catalog/apple/iphone/", ".catalog-item", ".item-title", ".price_val"),
@@ -117,7 +124,7 @@ async def main():
         caches = await asyncio.gather(*tasks)
         c_luxon, c_premium, c_like, c_pro, c_king = caches
         
-        print("📊 Формируем итоговую Excel-таблицу...")
+        print("📊 Обработка кэша и сборка Excel таблицы...")
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Срез цен"
@@ -166,7 +173,7 @@ async def main():
             chat_id = chat_id.strip()
             if chat_id:
                 with open(file_name, "rb") as f:
-                    requests.post(url_tg, data={"chat_id": chat_id, "caption": f"📊 Мониторинг рынка iPhone на {date_str} готов!"}, files={"document": f})
+                    requests.post(url_tg, data={"chat_id": chat_id, "caption": f"📊 Полный актуальный мониторинг рынка iPhone на {date_str} готов!"}, files={"document": f})
 
 if __name__ == "__main__":
     asyncio.run(main())
