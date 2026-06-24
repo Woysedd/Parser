@@ -6,14 +6,12 @@ import datetime
 import requests
 import os
 
-# Шапка таблицы строго без вашего магазина
 HEADERS = ["Название устройства", "re:luxon", "re:premium", "Like Store", "Prostore", "KingStore Уфа"]
 
-# Цветовая гамма для категорий моделей
-FILL_YELLOW = PatternFill(start_color="FFF2CC", fill_type="solid") # 13, 15
-FILL_GREEN = PatternFill(start_color="E2EFDA", fill_type="solid")  # 16, Air
-FILL_GREY = PatternFill(start_color="F2F2F2", fill_type="solid")   # 17 базовые
-FILL_PINK = PatternFill(start_color="FCE4D6", fill_type="solid")   # 17 Pro / Pro Max
+FILL_YELLOW = PatternFill(start_color="FFF2CC", fill_type="solid") 
+FILL_GREEN = PatternFill(start_color="E2EFDA", fill_type="solid")  
+FILL_GREY = PatternFill(start_color="F2F2F2", fill_type="solid")   
+FILL_PINK = PatternFill(start_color="FCE4D6", fill_type="solid")   
 FILL_HEADER = PatternFill(start_color="A9D08E", fill_type="solid")
 
 FONT_BOLD = Font(name="Arial", size=11, bold=True)
@@ -27,7 +25,6 @@ PRO_COLORS = ["Black", "White", "Natural", "Gold"]
 PRO_SIZES = ["256Gb", "512Gb", "1Tb"]
 SIM_TYPES = ["eSIM", "SIM+eSIM"]
 
-# Базовый список моделей по твоему ТЗ
 BASE_DEVICES = [
     ("iPhone 13 128Gb", FILL_YELLOW, "13", "128", ""),
     ("iPhone 15 128Gb", FILL_YELLOW, "15", "128", ""),
@@ -40,7 +37,6 @@ BASE_DEVICES = [
     ("iPhone 17 512Gb SIM+eSIM", FILL_GREY, "17", "512", "sim"),
 ]
 
-# Генерируем полную матрицу для 17 Pro и Pro Max со всеми комбинациями
 DEVICES_MATRIX = list(BASE_DEVICES)
 for model in ["iPhone 17 Pro", "iPhone 17 Pro Max"]:
     m_short = "17 pro max" if "max" in model.lower() else "17 pro"
@@ -53,55 +49,66 @@ for model in ["iPhone 17 Pro", "iPhone 17 Pro Max"]:
                 DEVICES_MATRIX.append((full_name, FILL_PINK, m_short, s_short, sim_short))
 
 def clean_price(raw_text):
-    if not raw_text:
-        return "По запросу"
+    if not raw_text: return "По запросу"
     digits = "".join([c for c in raw_text if c.isdigit()])
-    if not digits or len(digits) < 4:
-        return "По запросу"
-    if len(digits) > 6:
-        digits = digits[:6]
+    if not digits or len(digits) < 4: return "По запросу"
+    if len(digits) > 6: digits = digits[:6]
     return f"{digits[:-3]}.{digits[-3:]}"
 
-async def parse_site(page, url, m_num, mem, sim_type, item_sel, title_sel, price_sel):
+async def fetch_site_data(context, url, item_sel, title_sel, price_sel):
+    """Скачивает все товары с сайта за один заход в один клик"""
+    data = []
+    page = await context.new_page()
     try:
-        await page.goto(url, timeout=60000, wait_until="networkidle")
-        await asyncio.sleep(2)
-        
+        await page.goto(url, timeout=45000, wait_until="domcontentloaded")
+        await asyncio.sleep(3)
         items = await page.query_selector_all(item_sel)
         for item in items:
-            title_el = await item.query_selector(title_sel)
-            if not title_el:
-                continue
-            title_text = (await title_el.text_content()).lower()
-            
-            # Проверка соответствия модели, памяти и типа сим
-            if m_num in title_text and mem in title_text:
-                if "max" in m_num and "max" not in title_text:
-                    continue
-                if "max" not in m_num and "max" in title_text:
-                    continue
-                if "pro" in title_text and "pro" not in m_num:
-                    continue
-                if sim_type == "sim" and "esim" in title_text and "sim+" not in title_text:
-                    continue
-                if sim_type == "esim" and "esim" not in title_text:
-                    continue
-                
-                price_el = await item.query_selector(price_sel)
-                if price_el:
-                    return clean_price(await price_el.text_content())
-        return "По запросу"
-    except:
-        return "Ошибка"
+            t_el = await item.query_selector(title_sel)
+            p_el = await item.query_selector(price_sel)
+            if t_el and p_el:
+                t_text = (await t_el.text_content()).lower()
+                p_text = await p_el.text_content()
+                data.append((t_text, clean_price(p_text)))
+    except Exception as e:
+        print(f"Ошибка скачивания {url}: {e}")
+    finally:
+        await page.close()
+    return data
+
+def find_price_in_cache(cache, m_num, mem, sim_type):
+    """Мгновенно ищет нужную модель в скачанном кэше без запросов в сеть"""
+    for title_text, price in cache:
+        if m_num in title_text and mem in title_text:
+            if "max" in m_num and "max" not in title_text: continue
+            if "max" not in m_num and "max" in title_text: continue
+            if "pro" in title_text and "pro" not in m_num: continue
+            if sim_type == "sim" and "esim" in title_text and "sim+" not in title_text: continue
+            if sim_type == "esim" and "esim" not in title_text: continue
+            return price
+    return "По запросу"
 
 async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
-        page = await context.new_page()
         
+        print("🚀 Одновременно скачиваем каталоги всех конкурентов...")
+        # Запускаем параллельный сбор данных со всех 5 сайтов разом
+        tasks = [
+            fetch_site_data(context, "https://re-luxe42.ru/iphone/iphone-new", ".product-thumb", ".caption a", ".price"),
+            fetch_site_data(context, "https://repremium.ru/kemerovo/catalog/apple/iphone/", ".catalog-item", ".item-title", ".price_val"),
+            fetch_site_data(context, "https://kemerovo.lstore.ru/catalog/iphone_1/", ".product-card", ".product-card__title", ".product-card__price-current"),
+            fetch_site_data(context, "https://prostore-shop.ru/catalog_iphone", ".t-store__card", ".t-store__card__title", ".t-store__card__price-value"),
+            fetch_site_data(context, "https://kingstore.link/catalog/iphone/", ".catalog-item", ".item-title", ".price_val")
+        ]
+        
+        caches = await asyncio.gather(*tasks)
+        c_luxon, c_premium, c_like, c_pro, c_king = caches
+        
+        print("📊 Формируем итоговую Excel-таблицу...")
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Срез цен"
@@ -116,13 +123,11 @@ async def main():
             cell.alignment = Alignment(horizontal="left" if c_idx == 1 else "center", vertical="center")
         
         for dev_name, fill, m_num, mem, sim_type in DEVICES_MATRIX:
-            print(f"Парсим: {dev_name}...")
-            
-            p_luxon = await parse_site(page, "https://re-luxe42.ru/iphone/iphone-new", m_num, mem, sim_type, ".product-thumb", ".caption a", ".price")
-            p_premium = await parse_site(page, "https://repremium.ru/kemerovo/catalog/apple/iphone/", m_num, mem, sim_type, ".catalog-item", ".item-title", ".price_val")
-            p_like = await parse_site(page, "https://kemerovo.lstore.ru/catalog/iphone_1/", m_num, mem, sim_type, ".product-card", ".product-card__title", ".product-card__price-current")
-            p_pro = await parse_site(page, "https://prostore-shop.ru/catalog_iphone", m_num, mem, sim_type, ".t-store__card", ".t-store__card__title", ".t-store__card__price-value")
-            p_king_ufa = await parse_site(page, "https://kingstore.link/catalog/iphone/", m_num, mem, sim_type, ".catalog-item", ".item-title", ".price_val")
+            p_luxon = find_price_in_cache(c_luxon, m_num, mem, sim_type)
+            p_premium = find_price_in_cache(c_premium, m_num, mem, sim_type)
+            p_like = find_price_in_cache(c_like, m_num, mem, sim_type)
+            p_pro = find_price_in_cache(c_pro, m_num, mem, sim_type)
+            p_king_ufa = find_price_in_cache(c_king, m_num, mem, sim_type)
             
             ws.append([dev_name, p_luxon, p_premium, p_like, p_pro, p_king_ufa])
             
