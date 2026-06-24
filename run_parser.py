@@ -56,13 +56,23 @@ def clean_price(raw_text):
     return f"{digits[:-3]}.{digits[-3:]}"
 
 async def fetch_site_data(context, url, item_sel, title_sel, price_sel):
-    """Скачивает все товары с сайта за один заход в один клик"""
     data = []
     page = await context.new_page()
+    
+    # БЛОКИРОВКА МУСОРА: запрещаем грузить картинки и шрифты, чтобы экономить время и обходить тупняки сети
+    await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "font", "media"] else route.continue_())
+    
     try:
-        await page.goto(url, timeout=45000, wait_until="domcontentloaded")
-        await asyncio.sleep(3)
+        print(f"🔗 Подключаемся к {url}...")
+        # Переключаем ожидание на commit (как только пошел первый HTML-код, сразу парсим, не ждем полной загрузки)
+        await page.goto(url, timeout=30000, wait_until="commit")
+        
+        # Даем 5 секунд на то, чтобы подгрузились скрипты цен, если они динамические
+        await page.wait_for_timeout(5000)
+        
         items = await page.query_selector_all(item_sel)
+        print(f"📦 {url}: Найдено карточек товара — {len(items)}")
+        
         for item in items:
             t_el = await item.query_selector(title_sel)
             p_el = await item.query_selector(price_sel)
@@ -71,13 +81,12 @@ async def fetch_site_data(context, url, item_sel, title_sel, price_sel):
                 p_text = await p_el.text_content()
                 data.append((t_text, clean_price(p_text)))
     except Exception as e:
-        print(f"Ошибка скачивания {url}: {e}")
+        print(f"⚠️ Сайт {url} не ответил вовремя, вытаскиваем то, что успело загрузиться. Ошибка: {e}")
     finally:
         await page.close()
     return data
 
 def find_price_in_cache(cache, m_num, mem, sim_type):
-    """Мгновенно ищет нужную модель в скачанном кэше без запросов в сеть"""
     for title_text, price in cache:
         if m_num in title_text and mem in title_text:
             if "max" in m_num and "max" not in title_text: continue
@@ -92,11 +101,11 @@ async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080}
         )
         
-        print("🚀 Одновременно скачиваем каталоги всех конкурентов...")
-        # Запускаем параллельный сбор данных со всех 5 сайтов разом
+        print("🚀 Запускаем ускоренный параллельный сбор данных...")
         tasks = [
             fetch_site_data(context, "https://re-luxe42.ru/iphone/iphone-new", ".product-thumb", ".caption a", ".price"),
             fetch_site_data(context, "https://repremium.ru/kemerovo/catalog/apple/iphone/", ".catalog-item", ".item-title", ".price_val"),
