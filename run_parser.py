@@ -5,14 +5,15 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 import datetime
 import requests
 import os
-import re
 
+# Шапка таблицы строго без вашего магазина
 HEADERS = ["Название устройства", "re:luxon", "re:premium", "Like Store", "Prostore", "KingStore Уфа"]
 
-FILL_YELLOW = PatternFill(start_color="FFF2CC", fill_type="solid") 
-FILL_GREEN = PatternFill(start_color="E2EFDA", fill_type="solid")  
-FILL_GREY = PatternFill(start_color="F2F2F2", fill_type="solid")   
-FILL_PINK = PatternFill(start_color="FCE4D6", fill_type="solid")   
+# Цветовая гамма для категорий моделей
+FILL_YELLOW = PatternFill(start_color="FFF2CC", fill_type="solid") # 13, 15
+FILL_GREEN = PatternFill(start_color="E2EFDA", fill_type="solid")  # 16, Air
+FILL_GREY = PatternFill(start_color="F2F2F2", fill_type="solid")   # 17 базовые
+FILL_PINK = PatternFill(start_color="FCE4D6", fill_type="solid")   # 17 Pro / Pro Max
 FILL_HEADER = PatternFill(start_color="A9D08E", fill_type="solid")
 
 FONT_BOLD = Font(name="Arial", size=11, bold=True)
@@ -26,99 +27,70 @@ PRO_COLORS = ["Black", "White", "Natural", "Gold"]
 PRO_SIZES = ["256Gb", "512Gb", "1Tb"]
 SIM_TYPES = ["eSIM", "SIM+eSIM"]
 
-# Строго твой список моделей
+# Базовый список моделей по твоему ТЗ
 BASE_DEVICES = [
-    ("iPhone 13 128Gb", FILL_YELLOW),
-    ("iPhone 15 128Gb", FILL_YELLOW),
-    ("iPhone 16 128Gb", FILL_GREEN),
-    ("iPhone 16 256Gb", FILL_GREEN),
-    ("iPhone Air 256Gb", FILL_GREEN),
-    ("iPhone 17 128Gb eSIM", FILL_GREY),
-    ("iPhone 17 256Gb eSIM", FILL_GREY),
-    ("iPhone 17 256Gb SIM+eSIM", FILL_GREY),
-    ("iPhone 17 512Gb SIM+eSIM", FILL_GREY),
+    ("iPhone 13 128Gb", FILL_YELLOW, "13", "128", ""),
+    ("iPhone 15 128Gb", FILL_YELLOW, "15", "128", ""),
+    ("iPhone 16 128Gb", FILL_GREEN, "16", "128", ""),
+    ("iPhone 16 256Gb", FILL_GREEN, "16", "256", ""),
+    ("iPhone Air 256Gb", FILL_GREEN, "air", "256", ""),
+    ("iPhone 17 128Gb eSIM", FILL_GREY, "17", "128", "esim"),
+    ("iPhone 17 256Gb eSIM", FILL_GREY, "17", "256", "esim"),
+    ("iPhone 17 256Gb SIM+eSIM", FILL_GREY, "17", "256", "sim"),
+    ("iPhone 17 512Gb SIM+eSIM", FILL_GREY, "17", "512", "sim"),
 ]
 
-DEVICES = list(BASE_DEVICES)
+# Генерируем полную матрицу для 17 Pro и Pro Max со всеми комбинациями
+DEVICES_MATRIX = list(BASE_DEVICES)
 for model in ["iPhone 17 Pro", "iPhone 17 Pro Max"]:
+    m_short = "17 pro max" if "max" in model.lower() else "17 pro"
     for size in PRO_SIZES:
+        s_short = size.replace("Gb", "")
         for color in PRO_COLORS:
             for sim in SIM_TYPES:
-                DEVICES.append((f"{model} {size} {color} {sim}", FILL_PINK))
+                sim_short = "sim" if "sim+" in sim.lower() else "esim"
+                full_name = f"{model} {size} {color} {sim}"
+                DEVICES_MATRIX.append((full_name, FILL_PINK, m_short, s_short, sim_short))
 
-def clean_price(price_str):
-    if not price_str:
+def clean_price(raw_text):
+    if not raw_text:
         return "По запросу"
-    digits = "".join([c for c in price_str if c.isdigit()])
+    digits = "".join([c for c in raw_text if c.isdigit()])
     if not digits or len(digits) < 4:
         return "По запросу"
     if len(digits) > 6:
         digits = digits[:6]
     return f"{digits[:-3]}.{digits[-3:]}"
 
-async def parse_universal(page, url, device_name):
-    """Глубокий универсальный поиск по тексту всей страницы без привязки к селекторам"""
+async def parse_site(page, url, m_num, mem, sim_type, item_sel, title_sel, price_sel):
     try:
-        await page.goto(url, timeout=60000, wait_until="load")
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await asyncio.sleep(3) # Ждем подгрузки всех динамических прайсов
+        await page.goto(url, timeout=60000, wait_until="networkidle")
+        await asyncio.sleep(2)
         
-        # Забираем вообще весь видимый текст с сайта
-        body_text = await page.inner_text("body")
-        lines = body_text.split('\n')
-        
-        name_lower = device_name.lower()
-        # Определяем маркеры для поиска
-        tokens = name_lower.split()
-        
-        # Синонимы цветов для русскоязычной верстки конкурентов
-        color_synonyms = {
-            "black": ["черн", "black"],
-            "white": ["бел", "white", "silver", "сереб"],
-            "natural": ["титан", "natural", "нат"],
-            "gold": ["золот", "gold", "desert"]
-        }
-        
-        best_price = None
-        
-        # Перебираем строки текста в поисках совпадений
-        for i, line in enumerate(lines):
-            line_l = line.lower()
+        items = await page.query_selector_all(item_sel)
+        for item in items:
+            title_el = await item.query_selector(title_sel)
+            if not title_el:
+                continue
+            title_text = (await title_el.text_content()).lower()
             
-            # Проверяем основные токены (модель, память)
-            if not all(t in line_l for t in tokens if t not in ["esim", "sim+esim"] and t not in color_synonyms):
-                continue
+            # Проверка соответствия модели, памяти и типа сим
+            if m_num in title_text and mem in title_text:
+                if "max" in m_num and "max" not in title_text:
+                    continue
+                if "max" not in m_num and "max" in title_text:
+                    continue
+                if "pro" in title_text and "pro" not in m_num:
+                    continue
+                if sim_type == "sim" and "esim" in title_text and "sim+" not in title_text:
+                    continue
+                if sim_type == "esim" and "esim" not in title_text:
+                    continue
                 
-            # Проверяем тип сим-карты отдельно
-            if "sim+esim" in name_lower and "sim" not in line_l:
-                continue
-            if "esim" in name_lower and "sim+esim" not in name_lower and "esim" not in line_l:
-                continue
-                
-            # Проверяем цвет, если он указан в модели
-            color_match = True
-            for eng_color, rus_list in color_synonyms.items():
-                if eng_color in name_lower:
-                    if not any(r in line_l for r in rus_list):
-                        color_match = False
-            if not color_match:
-                continue
-                
-            # Если нашли строку с товаром, ищем цену в радиусе 3 строк вокруг неё
-            for offset in range(-1, 4):
-                if 0 <= i + offset < len(lines):
-                    check_line = lines[i + offset]
-                    # Ищем подстроку, похожую на ценник (от 30 000 до 350 000)
-                    nums = "".join([c for c in check_line if c.isdigit()])
-                    if nums and 4 <= len(nums) <= 6:
-                        val = int(nums)
-                        if 30000 <= val <= 350000:
-                            best_price = clean_price(check_line)
-                            break
-            if best_price:
-                break
-                
-        return best_price if best_price else "По запросу"
+                price_el = await item.query_selector(price_sel)
+                if price_el:
+                    return clean_price(await price_el.text_content())
+        return "По запросу"
     except:
         return "Ошибка"
 
@@ -126,7 +98,7 @@ async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
         
@@ -143,22 +115,14 @@ async def main():
             cell.border = THIN_BORDER
             cell.alignment = Alignment(horizontal="left" if c_idx == 1 else "center", vertical="center")
         
-        urls = {
-            "re:luxon": "https://re-luxe42.ru/iphone/iphone-new",
-            "re:premium": "https://repremium.ru/kemerovo/catalog/apple/iphone/",
-            "Like Store": "https://kemerovo.lstore.ru/catalog/iphone_1/",
-            "Prostore": "https://prostore-shop.ru/catalog_iphone",
-            "KingStore Уфа": "https://kingstore.link/catalog/iphone/"
-        }
-        
-        for dev_name, fill in DEVICES:
-            print(f"Ищем актуальные цены для: {dev_name}...")
+        for dev_name, fill, m_num, mem, sim_type in DEVICES_MATRIX:
+            print(f"Парсим: {dev_name}...")
             
-            p_luxon = await parse_universal(page, urls["re:luxon"], dev_name)
-            p_premium = await parse_universal(page, urls["re:premium"], dev_name)
-            p_like = await parse_universal(page, urls["Like Store"], dev_name)
-            p_pro = await parse_universal(page, urls["Prostore"], dev_name)
-            p_king_ufa = await parse_universal(page, urls["KingStore Уфа"], dev_name)
+            p_luxon = await parse_site(page, "https://re-luxe42.ru/iphone/iphone-new", m_num, mem, sim_type, ".product-thumb", ".caption a", ".price")
+            p_premium = await parse_site(page, "https://repremium.ru/kemerovo/catalog/apple/iphone/", m_num, mem, sim_type, ".catalog-item", ".item-title", ".price_val")
+            p_like = await parse_site(page, "https://kemerovo.lstore.ru/catalog/iphone_1/", m_num, mem, sim_type, ".product-card", ".product-card__title", ".product-card__price-current")
+            p_pro = await parse_site(page, "https://prostore-shop.ru/catalog_iphone", m_num, mem, sim_type, ".t-store__card", ".t-store__card__title", ".t-store__card__price-value")
+            p_king_ufa = await parse_site(page, "https://kingstore.link/catalog/iphone/", m_num, mem, sim_type, ".catalog-item", ".item-title", ".price_val")
             
             ws.append([dev_name, p_luxon, p_premium, p_like, p_pro, p_king_ufa])
             
@@ -188,7 +152,7 @@ async def main():
             chat_id = chat_id.strip()
             if chat_id:
                 with open(file_name, "rb") as f:
-                    requests.post(url_tg, data={"chat_id": chat_id, "caption": f"📊 Свежий срез цен реального времени на {date_str} готов!"}, files={"document": f})
+                    requests.post(url_tg, data={"chat_id": chat_id, "caption": f"📊 Мониторинг рынка iPhone на {date_str} готов!"}, files={"document": f})
 
 if __name__ == "__main__":
     asyncio.run(main())
